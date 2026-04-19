@@ -1,0 +1,15 @@
+# Sensitive — contains passwords, tokens, SSH keys
+01-dev/CLAUDE.md
+
+# macOS
+.DS_Store
+**/.DS_Store
+
+# Claude Code settings (local only)
+.claude/settings.local.json
+
+# Data directory — contains user content, not source code
+02-web/data/
+
+# Uploads (large files, uploaded manually to server)
+02-web/uploads/

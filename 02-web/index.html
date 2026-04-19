@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <title>LinkChannel</title>
+  <meta name="og-title-placeholder">
+  <!-- 主題必須在 CSS 載入前設定，避免閃爍 -->
+  <script>(function(){var t=localStorage.getItem('themeOverride')||(window.matchMedia('(prefers-color-scheme: light)').matches?'light':'dark');document.documentElement.dataset.theme=t;})()</script>
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+
+<!-- Background -->
+<div id="bg"></div>
+
+<!-- Status Bar -->
+<div id="statusbar">
+  <div class="time">00:00</div>
+  <div class="icons">
+    <svg width="16" height="12" viewBox="0 0 16 12" fill="white">
+      <rect x="0" y="4" width="3" height="8" rx="1" opacity="0.4"/>
+      <rect x="4.5" y="2.5" width="3" height="9.5" rx="1" opacity="0.6"/>
+      <rect x="9" y="0.5" width="3" height="11.5" rx="1" opacity="0.8"/>
+      <rect x="13.5" y="0" width="2.5" height="12" rx="1"/>
+    </svg>
+    <svg width="16" height="12" viewBox="0 0 24 12" fill="white">
+      <rect x="0" y="0" width="20" height="12" rx="3" stroke="white" stroke-width="1.5" fill="none"/>
+      <rect x="21.5" y="3.5" width="2.5" height="5" rx="1" fill="white" opacity="0.6"/>
+      <rect x="1.5" y="1.5" width="14" height="9" rx="2" fill="white"/>
+    </svg>
+  </div>
+</div>
+
+<!-- Main App -->
+<div id="app">
+  <!-- Slider -->
+  <div id="slider-wrapper">
+    <div id="slider"></div>
+  </div>
+</div>
+
+<!-- Page Dots -->
+<div id="page-dots"></div>
+
+<!-- Folder Modal -->
+<div id="folder-modal">
+  <div class="modal-backdrop"></div>
+  <div class="modal-content">
+    <div class="modal-title">資料夾</div>
+    <div class="folder-grid"></div>
+  </div>
+</div>
+
+<!-- Copy Link Button -->
+<button id="copy-btn" onclick="copyLink()" title="複製連結">
+  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
+    <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/>
+    <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
+  </svg>
+</button>
+
+<!-- Admin Button (hidden by default, shown via long-press or ?admin=1) -->
+<button id="admin-btn" onclick="checkAdminPassword()" title="管理後台" style="display:none">
+  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+    <circle cx="12" cy="8" r="4"/>
+    <path d="M6 20v-1a6 6 0 0 1 12 0v1"/>
+  </svg>
+</button>
+
+<!-- Admin Panel -->
+<div id="admin-panel">
+  <div id="admin-header">
+    <h1>管理後台</h1>
+    <button class="btn btn-ghost btn-sm" onclick="closeAdmin()">關閉</button>
+  </div>
+  <div id="admin-body"></div>
+</div>
+
+<!-- Item Edit Modal -->
+<div class="modal-overlay" id="item-modal">
+  <div class="modal-box"></div>
+</div>
+
+<!-- Password Screen -->
+<div id="password-screen" style="display:none">
+  <h2>🔒 請輸入密碼</h2>
+  <p>進入管理後台需要密碼</p>
+  <input type="password" id="pw-input" placeholder="••••••">
+  <div class="error-msg" id="pw-error"></div>
+  <button class="btn btn-primary" id="pw-submit">確認</button>
+</div>
+
+<!-- Toast -->
+<script src="js/app.js"></script>
+</body>
+</html>
