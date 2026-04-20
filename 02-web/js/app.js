@@ -25,6 +25,7 @@ async function init() {
   setInterval(updateClock, 1000);
   await loadData();
   applyBackground();
+  applyTitle();
   renderPages();
   renderDots();
 }
@@ -61,6 +62,14 @@ async function saveData() {
   }
   if (!res.ok) throw new Error(result.error || '儲存失敗');
   return result;
+}
+
+// ===== TITLE =====
+function applyTitle() {
+  const t = state.data.settings.title || 'My Works';
+  document.title = t;
+  document.querySelector('meta[property="og:title"]')?.setAttribute('content', t);
+  document.querySelector('meta[name="twitter:title"]')?.setAttribute('content', t);
 }
 
 // ===== BACKGROUND =====
@@ -829,6 +838,7 @@ async function saveAdmin() {
   try {
     await saveData();
     applyBackground();
+    applyTitle();
     renderPages();
     renderDots();
     closeAdmin();
