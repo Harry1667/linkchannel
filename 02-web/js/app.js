@@ -7,6 +7,24 @@ let state = {
   folderOpen: null,
 };
 
+// ===== EDIT MODE + DRAG STATE =====
+let editMode = false;
+const drag = {
+  active: false,
+  pi: -1,
+  fromIdx: -1,
+  currentSlot: -1,
+  slotPositions: [],  // fixed slot centers recorded at drag start
+  ghost: null,
+  originEl: null,
+  ofsX: 0,
+  ofsY: 0,
+  longPressTimer: null,
+  startX: 0,
+  startY: 0,
+  moved: false,
+};
+
 const COLORS = ['icon-color-1','icon-color-2','icon-color-3','icon-color-4','icon-color-5','icon-color-6','icon-color-7','icon-color-8'];
 const PRESETS = [
   { label: '深夜紫', value: 'linear-gradient(135deg, #0f0c29 0%, #302b63 50%, #24243e 100%)' },
@@ -24,6 +42,18 @@ async function init() {
   updateClock();
   setInterval(updateClock, 1000);
   await loadData();
+
+  // If password is enabled, require it on first load (also sets state.adminPassword for API saves)
+  const s = state.data.settings;
+  if (s.passwordEnabled && s.password) {
+    const sessionPwd = sessionStorage.getItem('lc_pwd');
+    if (sessionPwd === s.password) {
+      state.adminPassword = sessionPwd;
+    } else {
+      await new Promise(resolve => showPasswordScreen(resolve));
+    }
+  }
+
   applyBackground();
   applyTitle();
   renderPages();
@@ -110,17 +140,18 @@ function renderPages() {
       cta.innerHTML = `
         <div class="empty-icon">✨</div>
         <div class="empty-title">新增第一個作品</div>
-        <div class="empty-desc">長按時間列 3 秒<br>開啟管理後台</div>
+        <div class="empty-desc">點下方「新增」按鈕<br>開始加入網站或資料夾</div>
       `;
       pageEl.appendChild(cta);
     } else {
       const grid = document.createElement('div');
       grid.className = 'icon-grid';
+      grid.dataset.gridPi = pi;
 
-      page.items.forEach(item => {
+      page.items.forEach((item, ii) => {
         const iconEl = item.type === 'folder'
-          ? createFolderIcon(item, pi)
-          : createAppIcon(item);
+          ? createFolderIcon(item, pi, ii)
+          : createAppIcon(item, pi, ii);
 
         if (playAnim) {
           iconEl.style.setProperty('--delay', Math.min(animIndex * 0.05, 0.5) + 's');
@@ -141,6 +172,37 @@ function renderPages() {
   goToPage(state.currentPage, false);
 }
 
+// Re-render only the grid for a single page (used during drag)
+function renderPageGrid(pi) {
+  const pageEl = document.querySelector(`.page[data-page-index="${pi}"]`);
+  if (!pageEl) return;
+  const page = state.data.pages[pi];
+  let grid = pageEl.querySelector('.icon-grid');
+
+  if (!grid) {
+    pageEl.innerHTML = '';
+    grid = document.createElement('div');
+    grid.className = 'icon-grid';
+    grid.dataset.gridPi = pi;
+    pageEl.appendChild(grid);
+  } else {
+    grid.innerHTML = '';
+  }
+
+  page.items.forEach((item, ii) => {
+    const iconEl = item.type === 'folder'
+      ? createFolderIcon(item, pi, ii)
+      : createAppIcon(item, pi, ii);
+    grid.appendChild(iconEl);
+  });
+
+  if (editMode) {
+    grid.querySelectorAll('.app-icon').forEach(el => {
+      if (el !== drag.originEl) el.classList.add('jiggle');
+    });
+  }
+}
+
 function renderDots() {
   const dots = document.getElementById('page-dots');
   dots.innerHTML = '';
@@ -153,9 +215,11 @@ function renderDots() {
 }
 
 // ===== APP ICON =====
-function createAppIcon(item) {
+function createAppIcon(item, pi, ii) {
   const el = document.createElement('div');
   el.className = 'app-icon';
+  el.dataset.pi = pi;
+  el.dataset.ii = ii;
 
   const wrap = document.createElement('div');
   wrap.className = 'icon-wrap';
@@ -177,21 +241,29 @@ function createAppIcon(item) {
   el.appendChild(wrap);
   el.appendChild(label);
 
-  // Click / press animation
-  el.addEventListener('pointerdown', () => el.classList.add('pressing'));
-  el.addEventListener('pointerup', () => el.classList.remove('pressing'));
-  el.addEventListener('pointercancel', () => el.classList.remove('pressing'));
+  // Press animation (touch + mouse, avoids pointercancel issues on iOS)
+  el.addEventListener('touchstart', () => el.classList.add('pressing'), { passive: true });
+  el.addEventListener('touchend',   () => el.classList.remove('pressing'), { passive: true });
+  el.addEventListener('touchcancel',() => el.classList.remove('pressing'), { passive: true });
+  el.addEventListener('mousedown',  () => el.classList.add('pressing'));
+  el.addEventListener('mouseup',    () => el.classList.remove('pressing'));
+  el.addEventListener('mouseleave', () => el.classList.remove('pressing'));
+
   el.addEventListener('click', () => {
+    if (editMode || drag.active) return;
     if (item.url) window.open(item.url, '_blank');
   });
 
+  attachDragEvents(el, pi, ii);
   return el;
 }
 
 // ===== FOLDER ICON =====
-function createFolderIcon(item, pageIndex) {
+function createFolderIcon(item, pi, ii) {
   const el = document.createElement('div');
   el.className = 'app-icon folder-icon';
+  el.dataset.pi = pi;
+  el.dataset.ii = ii;
 
   const wrap = document.createElement('div');
   wrap.className = 'icon-wrap';
@@ -221,9 +293,273 @@ function createFolderIcon(item, pageIndex) {
   el.appendChild(wrap);
   el.appendChild(label);
 
-  el.addEventListener('click', () => openFolder(item));
+  el.addEventListener('click', () => {
+    if (editMode || drag.active) return;
+    openFolder(item);
+  });
+
+  attachDragEvents(el, pi, ii);
 
   return el;
+}
+
+// ===== DRAG ATTACHMENT (touch + mouse) =====
+// Uses touch events on iOS/iPad (pointer events fire pointercancel after long press,
+// stopping pointermove delivery — this approach bypasses that limitation).
+function attachDragEvents(el, pi, ii) {
+  if (pi === null || ii === null) return; // folder modal items — no drag
+
+  // ---- Touch (iOS / iPad) ----
+  el.addEventListener('touchstart', e => {
+    const t = e.touches[0];
+    drag.startX = t.clientX;
+    drag.startY = t.clientY;
+    drag.moved = false;
+
+    if (editMode) {
+      // Already in edit mode — start drag immediately
+      e.preventDefault();
+      beginDrag(t.clientX, t.clientY, pi, ii, el);
+      return;
+    }
+
+    drag.longPressTimer = setTimeout(() => {
+      drag.longPressTimer = null;
+      if (drag.moved) return;
+      enterEditMode();
+      beginDrag(drag.startX, drag.startY, pi, ii, el);
+    }, 500);
+  }, { passive: false });
+
+  el.addEventListener('touchmove', e => {
+    if (drag.longPressTimer) {
+      if (Math.hypot(e.touches[0].clientX - drag.startX, e.touches[0].clientY - drag.startY) > 8) {
+        clearTimeout(drag.longPressTimer);
+        drag.longPressTimer = null;
+        drag.moved = true;
+      }
+    }
+  }, { passive: true });
+
+  el.addEventListener('touchend', () => {
+    if (drag.longPressTimer) { clearTimeout(drag.longPressTimer); drag.longPressTimer = null; }
+  });
+
+  el.addEventListener('touchcancel', () => {
+    if (drag.longPressTimer) { clearTimeout(drag.longPressTimer); drag.longPressTimer = null; }
+  });
+
+  // ---- Mouse (desktop) ----
+  el.addEventListener('mousedown', e => {
+    if (e.button !== 0) return;
+    drag.startX = e.clientX;
+    drag.startY = e.clientY;
+    drag.moved = false;
+
+    if (editMode) {
+      beginDrag(e.clientX, e.clientY, pi, ii, el);
+      return;
+    }
+
+    drag.longPressTimer = setTimeout(() => {
+      drag.longPressTimer = null;
+      if (drag.moved) return;
+      enterEditMode();
+      beginDrag(drag.startX, drag.startY, pi, ii, el);
+    }, 500);
+  });
+}
+
+// ===== DRAG TO REORDER =====
+// Strategy: record slot positions at drag-start, use CSS transforms to visually
+// shift icons (no DOM re-render during drag), commit to state only on drop.
+
+function enterEditMode() {
+  if (editMode) return;
+  editMode = true;
+  isDragging = false; // cancel any in-progress touch swipe
+  document.getElementById('edit-done-btn').style.display = '';
+  document.querySelectorAll('.icon-grid .app-icon').forEach(el => el.classList.add('jiggle'));
+  if (navigator.vibrate) navigator.vibrate(10);
+}
+
+function exitEditMode() {
+  if (drag.active) endDrag(false);
+  editMode = false;
+  document.getElementById('edit-done-btn').style.display = 'none';
+  document.querySelectorAll('.app-icon.jiggle').forEach(el => el.classList.remove('jiggle'));
+  saveData().catch(() => {});
+}
+
+function beginDrag(clientX, clientY, pi, ii, iconEl) {
+  const pageEl = document.querySelector(`.page[data-page-index="${pi}"]`);
+  if (!pageEl) return;
+
+  const icons = Array.from(pageEl.querySelectorAll('.app-icon[data-ii]'));
+
+  // Record each slot's center position — these stay FIXED throughout the drag
+  drag.slotPositions = icons.map(ic => {
+    const r = ic.getBoundingClientRect();
+    return { cx: r.left + r.width / 2, cy: r.top + r.height / 2 };
+  });
+
+  const rect = iconEl.getBoundingClientRect();
+  drag.active = true;
+  drag.pi = pi;
+  drag.fromIdx = ii;
+  drag.currentSlot = ii;
+  drag.originEl = iconEl;
+  drag.ofsX = clientX - rect.left;
+  drag.ofsY = clientY - rect.top;
+
+  // Floating ghost clone
+  // Remove jiggle from ALL icons — CSS animation overrides inline transform,
+  // which would prevent applyDragVisual's translate() from taking effect.
+  pageEl.querySelectorAll('.app-icon[data-ii]').forEach(el => el.classList.remove('jiggle'));
+
+  const ghost = iconEl.cloneNode(true);
+  ghost.classList.remove('jiggle', 'falling');
+  ghost.style.cssText = `position:fixed;left:${rect.left}px;top:${rect.top}px;width:${rect.width}px;pointer-events:none;z-index:9999;transform:scale(1.12);opacity:0.92;transition:transform 0.12s;`;
+  document.body.appendChild(ghost);
+  drag.ghost = ghost;
+
+  iconEl.style.opacity = '0';
+  iconEl.style.pointerEvents = 'none';
+}
+
+// Build a mapping: newOrder[slot] = original item index at that slot.
+// The dragged item (fromIdx) goes to targetSlot; other items maintain relative order.
+function computeNewOrder(n, fromIdx, targetSlot) {
+  const newOrder = new Array(n);
+  newOrder[targetSlot] = fromIdx;
+  const remaining = [];
+  for (let i = 0; i < n; i++) {
+    if (i !== fromIdx) remaining.push(i);
+  }
+  let ri = 0;
+  for (let slot = 0; slot < n; slot++) {
+    if (slot !== targetSlot) newOrder[slot] = remaining[ri++];
+  }
+  return newOrder;
+}
+
+// Shift non-dragged icons to their new visual positions using CSS translate.
+function applyDragVisual() {
+  const pageEl = document.querySelector(`.page[data-page-index="${drag.pi}"]`);
+  if (!pageEl) return;
+  const icons = Array.from(pageEl.querySelectorAll('.app-icon[data-ii]'));
+  const n = icons.length;
+  const newOrder = computeNewOrder(n, drag.fromIdx, drag.currentSlot);
+
+  icons.forEach((ic, originalSlot) => {
+    if (originalSlot === drag.fromIdx) return; // hidden ghost slot
+    const targetSlot = newOrder.indexOf(originalSlot);
+    const dx = drag.slotPositions[targetSlot].cx - drag.slotPositions[originalSlot].cx;
+    const dy = drag.slotPositions[targetSlot].cy - drag.slotPositions[originalSlot].cy;
+    ic.style.transition = 'transform 0.18s ease';
+    ic.style.transform = (dx === 0 && dy === 0) ? '' : `translate(${dx}px,${dy}px)`;
+  });
+}
+
+function onDragMove(x, y) {
+  if (!drag.active || !drag.ghost) return;
+
+  // Move ghost with finger/cursor
+  drag.ghost.style.left = (x - drag.ofsX) + 'px';
+  drag.ghost.style.top  = (y - drag.ofsY) + 'px';
+
+  // Find nearest FIXED slot position — no oscillation because positions never change
+  let minDist = Infinity;
+  let nearestSlot = drag.currentSlot;
+  drag.slotPositions.forEach((pos, slot) => {
+    const dist = Math.hypot(x - pos.cx, y - pos.cy);
+    if (dist < minDist) { minDist = dist; nearestSlot = slot; }
+  });
+
+  if (nearestSlot !== drag.currentSlot) {
+    drag.currentSlot = nearestSlot;
+    applyDragVisual();
+  }
+}
+
+function endDrag(save = true) {
+  if (!drag.active) return;
+
+  const savedPi          = drag.pi;
+  const savedFromIdx     = drag.fromIdx;
+  const savedCurrentSlot = drag.currentSlot;
+  drag.active = false;
+
+  // Remove ghost
+  if (drag.ghost) { drag.ghost.remove(); drag.ghost = null; }
+
+  // Restore hidden origin slot (transforms will be cleared by re-render)
+  if (drag.originEl) {
+    drag.originEl.style.opacity = '';
+    drag.originEl.style.pointerEvents = '';
+    drag.originEl = null;
+  }
+
+  // Commit new order to state
+  if (save && savedFromIdx !== savedCurrentSlot) {
+    const items = state.data.pages[savedPi].items;
+    const newOrder = computeNewOrder(items.length, savedFromIdx, savedCurrentSlot);
+    state.data.pages[savedPi].items = newOrder.map(idx => items[idx]);
+    saveData().catch(() => {});
+  }
+
+  // Re-render clears all inline styles/transforms cleanly
+  renderPageGrid(savedPi);
+  if (editMode) {
+    setTimeout(() => {
+      document.querySelectorAll(`.page[data-page-index="${savedPi}"] .app-icon[data-ii]`)
+        .forEach(el => el.classList.add('jiggle'));
+    }, 30);
+  }
+}
+
+function initDragEvents() {
+  // ---- Touch global handlers ----
+  document.addEventListener('touchmove', e => {
+    if (!drag.active) return;
+    e.preventDefault(); // prevent page scroll while dragging
+    const t = e.touches[0];
+    onDragMove(t.clientX, t.clientY);
+  }, { passive: false });
+
+  document.addEventListener('touchend', e => {
+    if (drag.longPressTimer) { clearTimeout(drag.longPressTimer); drag.longPressTimer = null; }
+    if (drag.active) endDrag(true);
+  });
+
+  document.addEventListener('touchcancel', () => {
+    if (drag.longPressTimer) { clearTimeout(drag.longPressTimer); drag.longPressTimer = null; }
+    if (drag.active) endDrag(false);
+  });
+
+  // ---- Mouse global handlers ----
+  document.addEventListener('mousemove', e => {
+    // Cancel long-press if mouse moved significantly before timer fires
+    if (drag.longPressTimer) {
+      if (Math.hypot(e.clientX - drag.startX, e.clientY - drag.startY) > 8) {
+        clearTimeout(drag.longPressTimer);
+        drag.longPressTimer = null;
+        drag.moved = true;
+      }
+      return;
+    }
+    if (drag.active) onDragMove(e.clientX, e.clientY);
+  });
+
+  document.addEventListener('mouseup', () => {
+    if (drag.longPressTimer) { clearTimeout(drag.longPressTimer); drag.longPressTimer = null; }
+    if (drag.active) endDrag(true);
+  });
+
+  // Tap on empty area exits edit mode
+  document.getElementById('slider-wrapper').addEventListener('click', e => {
+    if (editMode && !e.target.closest('.app-icon')) exitEditMode();
+  });
 }
 
 // ===== FOLDER MODAL =====
@@ -237,7 +573,7 @@ function openFolder(folder) {
   grid.innerHTML = '';
 
   (folder.items || []).forEach(item => {
-    grid.appendChild(createAppIcon(item));
+    grid.appendChild(createAppIcon(item, null, null));
   });
 
   modal.classList.add('open');
@@ -270,21 +606,23 @@ let swipeStartX = null, swipeStartY = null, isDragging = false;
 function initSwipe() {
   const wrapper = document.getElementById('slider-wrapper');
 
+  // ---- Touch (mobile) ----
   wrapper.addEventListener('touchstart', e => {
+    if (editMode) return; // no page-flip in edit/drag mode
     swipeStartX = e.touches[0].clientX;
     swipeStartY = e.touches[0].clientY;
     isDragging = true;
   }, { passive: true });
 
   wrapper.addEventListener('touchmove', e => {
-    if (!isDragging) return;
+    if (!isDragging || editMode || drag.active) return;
     const dx = e.touches[0].clientX - swipeStartX;
     const dy = e.touches[0].clientY - swipeStartY;
     if (Math.abs(dx) > Math.abs(dy)) e.preventDefault();
   }, { passive: false });
 
   wrapper.addEventListener('touchend', e => {
-    if (!isDragging) return;
+    if (!isDragging || editMode || drag.active) { isDragging = false; return; }
     isDragging = false;
     const dx = e.changedTouches[0].clientX - swipeStartX;
     if (Math.abs(dx) > 50) {
@@ -292,11 +630,16 @@ function initSwipe() {
     }
   });
 
-  // Mouse drag
+  // ---- Mouse (desktop) ----
   let mouseDown = false, mouseX = 0;
-  wrapper.addEventListener('mousedown', e => { mouseDown = true; mouseX = e.clientX; });
+  wrapper.addEventListener('mousedown', e => {
+    // Don't start a swipe when clicking on an icon (those handle their own long-press/drag)
+    if (editMode || e.target.closest('.app-icon')) return;
+    mouseDown = true;
+    mouseX = e.clientX;
+  });
   wrapper.addEventListener('mousemove', e => {
-    if (!mouseDown) return;
+    if (!mouseDown || editMode || drag.active) return;
     const dx = e.clientX - mouseX;
     const slider = document.getElementById('slider');
     slider.style.transition = 'none';
@@ -305,6 +648,7 @@ function initSwipe() {
   window.addEventListener('mouseup', e => {
     if (!mouseDown) return;
     mouseDown = false;
+    if (editMode || drag.active) { goToPage(state.currentPage); return; }
     const dx = e.clientX - mouseX;
     const slider = document.getElementById('slider');
     slider.style.transition = '';
@@ -314,6 +658,48 @@ function initSwipe() {
       goToPage(state.currentPage);
     }
   });
+}
+
+// ===== DOCK ACTIONS =====
+function showAddMenu() {
+  document.getElementById('add-menu-page-num').textContent = state.currentPage + 1;
+  document.getElementById('add-menu').classList.add('open');
+}
+
+function hideAddMenu() {
+  document.getElementById('add-menu').classList.remove('open');
+}
+
+function addItemFromMenu(type) {
+  hideAddMenu();
+  showItemModal(null, state.currentPage, -1, type);
+}
+
+function openSecurityPanel() {
+  const s = state.data.settings;
+  document.getElementById('sec-pw-enabled').checked = !!s.passwordEnabled;
+  document.getElementById('sec-pw-value').value = s.password || '';
+  document.getElementById('security-modal').classList.add('open');
+}
+
+function closeSecurityPanel() {
+  document.getElementById('security-modal').classList.remove('open');
+}
+
+async function saveSecurity() {
+  const newPwd = document.getElementById('sec-pw-value').value;
+  state.data.settings.passwordEnabled = document.getElementById('sec-pw-enabled').checked;
+  state.data.settings.password = newPwd;
+  // Keep admin session in sync with the new password
+  state.adminPassword = newPwd;
+  sessionStorage.setItem('lc_pwd', newPwd);
+  try {
+    await saveData();
+    closeSecurityPanel();
+    showToast('安全設定已儲存');
+  } catch (e) {
+    showToast(e.message || '儲存失敗', 'error');
+  }
 }
 
 // ===== ADMIN =====
@@ -367,22 +753,6 @@ function renderAdmin() {
           <option value="dark" ${localStorage.getItem('themeOverride')==='dark'?'selected':''}>強制深色</option>
           <option value="light" ${localStorage.getItem('themeOverride')==='light'?'selected':''}>強制淡色</option>
         </select>
-      </div>
-    </div>
-
-    <!-- Password -->
-    <div class="admin-section">
-      <h3>Admin 密碼</h3>
-      <div class="toggle-row">
-        <label>啟用密碼保護</label>
-        <label class="toggle">
-          <input type="checkbox" id="pw-enabled" ${s.passwordEnabled ? 'checked' : ''}>
-          <span class="toggle-slider"></span>
-        </label>
-      </div>
-      <div class="form-group" style="margin-top:12px">
-        <label>密碼</label>
-        <input type="password" id="pw-value" value="${escHtml(s.password || '')}" placeholder="留空 = 不設密碼">
       </div>
     </div>
 
@@ -821,8 +1191,6 @@ function deleteFolderItem(pageIndex, folderIndex, subIndex) {
 async function saveAdmin() {
   const s = state.data.settings;
   s.title = document.getElementById('admin-title').value.trim() || 'My Works';
-  s.passwordEnabled = document.getElementById('pw-enabled').checked;
-  s.password = document.getElementById('pw-value').value;
 
   // Theme
   const themeVal = document.getElementById('theme-select')?.value || 'system';
@@ -848,15 +1216,6 @@ async function saveAdmin() {
   }
 }
 
-// ===== ADMIN PASSWORD GATE =====
-function checkAdminPassword() {
-  const s = state.data.settings;
-  if (!s.passwordEnabled || !s.password) {
-    openAdmin();
-    return;
-  }
-  showPasswordScreen(() => openAdmin());
-}
 
 function showPasswordScreen(onSuccess) {
   const screen = document.getElementById('password-screen');
@@ -870,6 +1229,7 @@ function showPasswordScreen(onSuccess) {
   const submit = () => {
     if (input.value === state.data.settings.password) {
       state.adminPassword = input.value;
+      sessionStorage.setItem('lc_pwd', input.value);
       screen.style.display = 'none';
       onSuccess();
     } else {
@@ -928,46 +1288,12 @@ async function copyLink() {
   }
 }
 
-// ===== ADMIN GESTURE (Long-press statusbar 3s) =====
-function initAdminGesture() {
-  const statusbar = document.getElementById('statusbar');
-  let pressTimer = null, pressStartPos = null;
-
-  const cancelPress = () => {
-    clearTimeout(pressTimer);
-    pressStartPos = null;
-  };
-
-  statusbar.addEventListener('pointerdown', (e) => {
-    pressStartPos = { x: e.clientX, y: e.clientY };
-    pressTimer = setTimeout(() => {
-      document.getElementById('admin-btn').style.display = '';
-      showToast('管理員入口已解鎖 🔓');
-    }, 3000);
-  });
-
-  statusbar.addEventListener('pointerup', cancelPress);
-  statusbar.addEventListener('pointercancel', cancelPress);
-  window.addEventListener('scroll', cancelPress, { passive: true });
-
-  statusbar.addEventListener('pointermove', (e) => {
-    if (!pressStartPos) return;
-    if (Math.abs(e.clientX - pressStartPos.x) > 8 || Math.abs(e.clientY - pressStartPos.y) > 8) {
-      cancelPress();
-    }
-  });
-}
 
 // ===== START =====
 window.addEventListener('DOMContentLoaded', () => {
-  // ?admin=1 → 直接顯示 Admin 按鈕
-  if (new URLSearchParams(location.search).get('admin') === '1') {
-    document.getElementById('admin-btn').style.display = '';
-  }
-
   init().then(() => {
     initSwipe();
-    initAdminGesture();
+    initDragEvents();
     document.getElementById('folder-modal').querySelector('.modal-backdrop')
       .addEventListener('click', closeFolder);
   });

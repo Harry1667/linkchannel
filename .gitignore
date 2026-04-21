@@ -13,3 +13,4 @@
 
 # Uploads (large files, uploaded manually to server)
 02-web/uploads/
+.gstack/
