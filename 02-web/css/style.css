@@ -2,11 +2,10 @@
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
 :root {
-  --icon-size: 76px;
-  --icon-radius: 18px;
-  --gap: 28px;
-  --cols: 4;
-  --rows: 5;
+  --icon-size: 90px;
+  --icon-radius: 16px;
+  --cols: 16;
+  --rows: 8;
   --label-color: #fff;
   --label-shadow: 0 1px 3px rgba(0,0,0,0.7);
   --folder-bg: rgba(255,255,255,0.18);
@@ -77,18 +76,32 @@ html, body {
   min-width: 100vw;
   height: 100%;
   display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 20px 32px;
+  align-items: stretch;
+  justify-content: stretch;
 }
 
 /* ===== ICON GRID ===== */
 .icon-grid {
   display: grid;
-  grid-template-columns: repeat(var(--cols), var(--icon-size));
-  grid-template-rows: repeat(var(--rows), auto);
-  gap: var(--gap);
-  align-content: start;
+  grid-template-columns: repeat(var(--cols), 1fr);
+  grid-template-rows: repeat(var(--rows), 1fr);
+  width: 100%;
+  height: 100%;
+  place-items: center;
+}
+
+/* Empty grid cell placeholder */
+.grid-cell-empty {
+  width: 100%;
+  height: 100%;
+  border-radius: var(--icon-radius);
+}
+
+/* Drop target highlight */
+.grid-cell-target {
+  background: rgba(255,255,255,0.12);
+  border: 2px dashed rgba(255,255,255,0.35);
+  border-radius: var(--icon-radius);
 }
 
 /* ===== APP ICON ===== */
@@ -187,17 +200,20 @@ html, body {
 }
 
 .dot {
-  width: 7px; height: 7px;
-  border-radius: 50%;
-  background: rgba(255,255,255,0.35);
+  padding: 4px 12px;
+  border-radius: 20px;
+  background: rgba(255,255,255,0.15);
+  color: rgba(255,255,255,0.55);
+  font-size: 12px;
+  font-weight: 600;
   transition: all 0.25s ease;
   cursor: pointer;
+  white-space: nowrap;
 }
 
 .dot.active {
-  background: #fff;
-  width: 20px;
-  border-radius: 4px;
+  background: rgba(255,255,255,0.9);
+  color: #1c1c2e;
 }
 
 /* ===== DOCK ===== */
@@ -625,19 +641,15 @@ html, body {
     --gap: 14px;
     --cols: 4;
   }
-  /* 縮小側邊 padding，讓 4×64 + 3×14 = 298px 能在 375px 螢幕容納 */
-  .page { padding: 20px 16px; }
-  .icon-grid { grid-template-columns: repeat(var(--cols), var(--icon-size)); }
 }
 
 @media (min-width: 768px) {
   :root {
     --icon-size: 90px;
-    --icon-radius: 20px;
-    --gap: 36px;
-    --cols: 5;
+    --icon-radius: 16px;
+    --cols: 16;
+    --rows: 8;
   }
-  .icon-grid { grid-template-columns: repeat(var(--cols), var(--icon-size)); }
 }
 
 /* ===== SCROLLBAR ===== */
@@ -685,10 +697,12 @@ html, body {
 }
 
 [data-theme="light"] .dot {
-  background: rgba(0,0,0,0.2);
+  background: rgba(0,0,0,0.1);
+  color: rgba(0,0,0,0.45);
 }
 [data-theme="light"] .dot.active {
-  background: #1c1c1e;
+  background: rgba(0,0,0,0.8);
+  color: #fff;
 }
 
 [data-theme="light"] #dock {

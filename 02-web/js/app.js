@@ -12,13 +12,11 @@ let editMode = false;
 const drag = {
   active: false,
   pi: -1,
-  fromIdx: -1,
-  toIdx: -1,
-  slots: [],      // {cx,cy} for every icon, recorded once at drag-start
-  ghost: null,
-  originEl: null,
+  fromSlot: -1, toSlot: -1,  // slot indices (not array indices)
+  slots: [],    // {cx, cy, slotIdx} for ALL grid cells, recorded once at drag-start
+  ghost: null, originEl: null,
   ofsX: 0, ofsY: 0,
-  timer: null,    // long-press timer
+  timer: null,
   startX: 0, startY: 0,
 };
 
@@ -186,12 +184,36 @@ function renderPageGrid(pi) {
     grid.innerHTML = '';
   }
 
+  // Migration: assign slot if missing
   page.items.forEach((item, ii) => {
-    const iconEl = item.type === 'folder'
-      ? createFolderIcon(item, pi, ii)
-      : createAppIcon(item, pi, ii);
-    grid.appendChild(iconEl);
+    if (item.slot == null) item.slot = ii;
   });
+
+  const style = getComputedStyle(document.documentElement);
+  const cols = parseInt(style.getPropertyValue('--cols')) || 4;
+  const rows = parseInt(style.getPropertyValue('--rows')) || 5;
+  const total = cols * rows;
+
+  // Build slot → {item, ii} map
+  const slotMap = {};
+  page.items.forEach((item, ii) => { slotMap[item.slot] = { item, ii }; });
+
+  // Render ALL cells: icons where occupied, empty placeholder otherwise
+  for (let s = 0; s < total; s++) {
+    if (slotMap[s]) {
+      const { item, ii } = slotMap[s];
+      const iconEl = item.type === 'folder'
+        ? createFolderIcon(item, pi, ii)
+        : createAppIcon(item, pi, ii);
+      iconEl.dataset.slot = s;
+      grid.appendChild(iconEl);
+    } else {
+      const cell = document.createElement('div');
+      cell.className = 'grid-cell-empty';
+      cell.dataset.slot = s;
+      grid.appendChild(cell);
+    }
+  }
 
   if (editMode) {
     grid.querySelectorAll('.app-icon').forEach(el => {
@@ -203,9 +225,11 @@ function renderPageGrid(pi) {
 function renderDots() {
   const dots = document.getElementById('page-dots');
   dots.innerHTML = '';
-  state.data.pages.forEach((_, i) => {
+  state.data.pages.forEach((page, i) => {
     const dot = document.createElement('div');
+    const name = page.name || `頁面 ${i + 1}`;
     dot.className = 'dot' + (i === state.currentPage ? ' active' : '');
+    dot.textContent = name;
     dot.onclick = () => goToPage(i);
     dots.appendChild(dot);
   });
@@ -316,8 +340,10 @@ function attachDragEvents(el, pi, ii) {
       return;
     }
 
+    console.log(`[drag] touchstart icon=${ii} editMode=${editMode}`);
     drag.timer = setTimeout(() => {
       drag.timer = null;
+      console.log(`[drag] long-press fired icon=${ii}`);
       enterEditMode();
       beginDrag(drag.startX, drag.startY, pi, ii, el);
     }, 600);
@@ -325,7 +351,9 @@ function attachDragEvents(el, pi, ii) {
 
   el.addEventListener('touchmove', e => {
     if (!drag.timer) return;
-    if (Math.hypot(e.touches[0].clientX - drag.startX, e.touches[0].clientY - drag.startY) > 8) {
+    const dist = Math.hypot(e.touches[0].clientX - drag.startX, e.touches[0].clientY - drag.startY);
+    if (dist > 8) {
+      console.log(`[drag] touchmove cancelled long-press (moved ${dist.toFixed(0)}px)`);
       clearTimeout(drag.timer);
       drag.timer = null;
     }
@@ -340,10 +368,12 @@ function attachDragEvents(el, pi, ii) {
     drag.startX = e.clientX;
     drag.startY = e.clientY;
 
+    console.log(`[drag] mousedown icon=${ii} editMode=${editMode}`);
     if (editMode) { beginDrag(e.clientX, e.clientY, pi, ii, el); return; }
 
     drag.timer = setTimeout(() => {
       drag.timer = null;
+      console.log(`[drag] long-press fired icon=${ii}`);
       enterEditMode();
       beginDrag(drag.startX, drag.startY, pi, ii, el);
     }, 600);
@@ -373,25 +403,26 @@ function beginDrag(x, y, pi, ii, iconEl) {
   const pageEl = document.querySelector(`.page[data-page-index="${pi}"]`);
   if (!pageEl) return;
 
-  const icons = Array.from(pageEl.querySelectorAll('.app-icon[data-ii]'));
+  // Remove jiggle before recording positions (CSS rotate would skew centers)
+  pageEl.querySelectorAll('.app-icon').forEach(ic => ic.classList.remove('jiggle'));
 
-  // Record every slot's center — stays fixed for the entire drag
-  drag.slots = icons.map(ic => {
-    const r = ic.getBoundingClientRect();
-    return { cx: r.left + r.width / 2, cy: r.top + r.height / 2 };
+  // Record ALL grid cells (icons + empty) — stays fixed for entire drag
+  const allCells = Array.from(pageEl.querySelectorAll('[data-slot]'));
+  drag.slots = allCells.map(el => {
+    const r = el.getBoundingClientRect();
+    return { cx: r.left + r.width / 2, cy: r.top + r.height / 2, slotIdx: parseInt(el.dataset.slot) };
   });
 
+  const fromSlot = state.data.pages[pi].items[ii].slot ?? ii;
   const rect = iconEl.getBoundingClientRect();
-  drag.active   = true;
-  drag.pi       = pi;
-  drag.fromIdx  = ii;
-  drag.toIdx    = ii;
-  drag.originEl = iconEl;
-  drag.ofsX     = x - rect.left;
-  drag.ofsY     = y - rect.top;
 
-  // Jiggle uses CSS transform:rotate — must be removed before we apply translate
-  icons.forEach(ic => ic.classList.remove('jiggle'));
+  drag.active    = true;
+  drag.pi        = pi;
+  drag.fromSlot  = fromSlot;
+  drag.toSlot    = fromSlot;
+  drag.originEl  = iconEl;
+  drag.ofsX      = x - rect.left;
+  drag.ofsY      = y - rect.top;
 
   // Floating ghost that follows the finger
   const ghost = iconEl.cloneNode(true);
@@ -402,7 +433,7 @@ function beginDrag(x, y, pi, ii, iconEl) {
   document.body.appendChild(ghost);
   drag.ghost = ghost;
 
-  // Hide origin — keeps its slot in the grid as an invisible placeholder
+  // Hide origin in-place (keeps grid slot as invisible placeholder)
   iconEl.style.opacity       = '0';
   iconEl.style.pointerEvents = 'none';
 }
@@ -414,37 +445,27 @@ function moveDrag(x, y) {
   drag.ghost.style.left = (x - drag.ofsX) + 'px';
   drag.ghost.style.top  = (y - drag.ofsY) + 'px';
 
-  // Nearest slot by Euclidean distance to the pre-recorded centers
-  let nearest = drag.toIdx, minD = Infinity;
-  drag.slots.forEach((s, i) => {
+  // Nearest slot by Euclidean distance to ALL pre-recorded cell centers
+  let nearestSlot = drag.toSlot, minD = Infinity;
+  drag.slots.forEach(s => {
     const d = Math.hypot(x - s.cx, y - s.cy);
-    if (d < minD) { minD = d; nearest = i; }
+    if (d < minD) { minD = d; nearestSlot = s.slotIdx; }
   });
 
-  if (nearest === drag.toIdx) return;
-  drag.toIdx = nearest;
+  if (nearestSlot === drag.toSlot) return;
+  drag.toSlot = nearestSlot;
 
-  // Slide other icons with CSS translate so they appear to make room
+  // Highlight the target cell
   const pageEl = document.querySelector(`.page[data-page-index="${drag.pi}"]`);
   if (!pageEl) return;
-  const icons = Array.from(pageEl.querySelectorAll('.app-icon[data-ii]'));
-  const from = drag.fromIdx, to = drag.toIdx;
-
-  icons.forEach((ic, i) => {
-    if (i === from) return; // dragged icon is hidden — no transform needed
-    let dest = i;
-    if (from < to && i > from && i <= to) dest = i - 1; // shift left
-    if (from > to && i >= to && i < from) dest = i + 1; // shift right
-    const dx = drag.slots[dest].cx - drag.slots[i].cx;
-    const dy = drag.slots[dest].cy - drag.slots[i].cy;
-    ic.style.transition = 'transform 0.18s ease';
-    ic.style.transform  = (dx === 0 && dy === 0) ? '' : `translate(${dx}px,${dy}px)`;
-  });
+  pageEl.querySelectorAll('.grid-cell-target').forEach(el => el.classList.remove('grid-cell-target'));
+  const targetEl = pageEl.querySelector(`[data-slot="${nearestSlot}"]`);
+  if (targetEl && targetEl !== drag.originEl) targetEl.classList.add('grid-cell-target');
 }
 
 function endDrag(commit = true) {
   if (!drag.active) return;
-  const { pi, fromIdx, toIdx } = drag;
+  const { pi, fromSlot, toSlot } = drag;
   drag.active = false;
 
   drag.ghost?.remove();
@@ -456,10 +477,15 @@ function endDrag(commit = true) {
     drag.originEl = null;
   }
 
-  if (commit && fromIdx !== toIdx) {
+  // Clear target highlight
+  document.querySelectorAll('.grid-cell-target').forEach(el => el.classList.remove('grid-cell-target'));
+
+  if (commit && fromSlot !== toSlot) {
     const items = state.data.pages[pi].items;
-    const [moved] = items.splice(fromIdx, 1);
-    items.splice(toIdx, 0, moved);
+    const movedItem = items.find(it => it.slot === fromSlot);
+    const swapItem  = items.find(it => it.slot === toSlot);
+    if (movedItem) movedItem.slot = toSlot;
+    if (swapItem)  swapItem.slot  = fromSlot;  // swap if occupied; empty slot = just move
     saveData().catch(() => {});
   }
 
@@ -710,7 +736,6 @@ function renderAdmin() {
       <div id="admin-pages-list">
         ${pages.map((page, pi) => renderAdminPage(page, pi)).join('')}
       </div>
-      <button class="btn btn-ghost btn-sm" onclick="addPage()" style="margin-top:8px">+ 新增頁面</button>
     </div>
 
     <!-- Save -->
@@ -752,10 +777,14 @@ function renderAdminPage(page, pi) {
   return `
     <div class="admin-page-block" style="margin-bottom:16px;padding:12px 14px;background:rgba(255,255,255,0.04);border-radius:14px;border:1px solid rgba(255,255,255,0.06)">
       <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">
-        <span style="color:rgba(255,255,255,0.6);font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:0.5px">頁面 ${pi + 1}</span>
+        <input
+          type="text"
+          value="${escAttr(page.name || '')}"
+          placeholder="頁面 ${pi + 1}"
+          oninput="updatePageName(${pi}, this.value)"
+          style="background:transparent;border:none;border-bottom:1px solid rgba(255,255,255,0.2);color:#fff;font-size:13px;font-weight:600;outline:none;padding:2px 4px;width:120px;"
+        />
         <div style="display:flex;gap:6px">
-          <button class="btn btn-ghost btn-sm" onclick="addItem(${pi}, 'app')">+ App</button>
-          <button class="btn btn-ghost btn-sm" onclick="addItem(${pi}, 'folder')">+ 資料夾</button>
           ${pi > 0 ? `<button class="btn btn-danger btn-sm" onclick="removePage(${pi})">刪除頁</button>` : ''}
         </div>
       </div>
@@ -803,9 +832,23 @@ function deleteItem(pageIndex, itemIndex) {
   renderAdmin();
 }
 
+function updatePageName(pi, name) {
+  state.data.pages[pi].name = name.trim();
+  renderDots();
+}
+
 function addPage() {
   state.data.pages.push({ id: 'page-' + Date.now(), items: [] });
   renderAdmin();
+}
+
+function addPageFromMenu() {
+  hideAddMenu();
+  state.data.pages.push({ id: 'page-' + Date.now(), items: [] });
+  saveData().catch(() => {});
+  render();
+  goToPage(state.data.pages.length - 1);
+  showToast('已新增書頁');
 }
 
 function removePage(pi) {
@@ -1064,8 +1107,14 @@ function saveItem(pageIndex, itemIndex, type) {
   };
 
   if (itemIndex >= 0) {
+    newItem.slot = existingItem?.slot ?? itemIndex;
     state.data.pages[pageIndex].items[itemIndex] = newItem;
   } else {
+    // Find first free slot
+    const usedSlots = new Set(state.data.pages[pageIndex].items.map(it => it.slot ?? 0));
+    let slot = 0;
+    while (usedSlots.has(slot)) slot++;
+    newItem.slot = slot;
     state.data.pages[pageIndex].items.push(newItem);
   }
 
