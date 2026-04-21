@@ -378,7 +378,7 @@ function enterEditMode() {
   if (editMode) return;
   editMode = true;
   isDragging = false; // cancel any in-progress touch swipe
-  document.getElementById('edit-done-btn').style.display = '';
+  document.getElementById('edit-done-btn').style.display = 'block';
   document.querySelectorAll('.icon-grid .app-icon').forEach(el => el.classList.add('jiggle'));
   if (navigator.vibrate) navigator.vibrate(10);
 }
@@ -882,14 +882,14 @@ function showItemModal(item, pageIndex, itemIndex, type) {
           <input type="url" id="item-url-input" placeholder="https://..." style="flex:1">
           <button class="btn btn-primary" id="fetch-btn" onclick="fetchMeta(${pageIndex})">抓取</button>
         </div>
-        <div id="fetch-status" style="margin-top:6px;font-size:12px;color:rgba(255,255,255,0.4)">輸入網址後點「抓取」</div>
+        <div id="fetch-status" style="margin-top:6px;font-size:12px;color:var(--text-secondary,rgba(0,0,0,0.4))">輸入網址後點「抓取」</div>
       </div>
       <div id="item-form" style="display:none">
-        <div style="display:flex;align-items:center;gap:14px;margin-bottom:16px;padding:12px;background:rgba(255,255,255,0.05);border-radius:12px">
-          <div id="icon-preview" style="width:56px;height:56px;border-radius:13px;background:rgba(255,255,255,0.15);display:flex;align-items:center;justify-content:center;font-size:30px;overflow:hidden;flex-shrink:0"></div>
+        <div style="display:flex;align-items:center;gap:14px;margin-bottom:16px;padding:12px;background:var(--preview-card-bg,rgba(0,0,0,0.06));border-radius:12px">
+          <div id="icon-preview" style="width:56px;height:56px;border-radius:13px;background:var(--preview-icon-bg,rgba(0,0,0,0.08));display:flex;align-items:center;justify-content:center;font-size:30px;overflow:hidden;flex-shrink:0"></div>
           <div style="flex:1;min-width:0">
-            <div id="preview-name" style="color:#fff;font-weight:600;font-size:15px"></div>
-            <div id="preview-url" style="color:rgba(255,255,255,0.4);font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"></div>
+            <div id="preview-name" style="color:var(--text-primary,#1c1c2e);font-weight:600;font-size:15px"></div>
+            <div id="preview-url" style="color:var(--text-secondary,rgba(0,0,0,0.4));font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"></div>
           </div>
         </div>
         <div class="form-group">

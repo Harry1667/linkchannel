@@ -227,7 +227,6 @@ html, body {
   z-index: 1000;
   cursor: pointer;
   box-shadow: 0 2px 14px rgba(0,0,0,0.35);
-  display: none;
 }
 
 @keyframes jiggle {
@@ -872,9 +871,19 @@ html, body {
 [data-theme="light"] .modal-box {
   background: #ffffff;
   border-color: rgba(0,0,0,0.08);
+  --text-primary: #1c1c2e;
+  --text-secondary: rgba(0,0,0,0.45);
+  --preview-card-bg: rgba(0,0,0,0.05);
+  --preview-icon-bg: rgba(0,0,0,0.07);
 }
 [data-theme="light"] .modal-box h2 {
   color: #1c1c1e;
+}
+.modal-box {
+  --text-primary: #fff;
+  --text-secondary: rgba(255,255,255,0.4);
+  --preview-card-bg: rgba(255,255,255,0.05);
+  --preview-icon-bg: rgba(255,255,255,0.15);
 }
 
 /* Password screen */
