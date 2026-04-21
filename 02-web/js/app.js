@@ -846,7 +846,8 @@ function addPageFromMenu() {
   hideAddMenu();
   state.data.pages.push({ id: 'page-' + Date.now(), items: [] });
   saveData().catch(() => {});
-  render();
+  renderPages();
+  renderDots();
   goToPage(state.data.pages.length - 1);
   showToast('已新增書頁');
 }
@@ -1119,6 +1120,8 @@ function saveItem(pageIndex, itemIndex, type) {
   }
 
   closeItemModal();
+  renderPageGrid(pageIndex);
+  saveData().catch(() => {});
   renderAdmin();
 }
 
