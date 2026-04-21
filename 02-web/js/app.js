@@ -12,11 +12,13 @@ let editMode = false;
 const drag = {
   active: false,
   pi: -1,
+  fromPi: -1,    // page where drag started (for cross-page detection)
   fromSlot: -1, toSlot: -1,  // slot indices (not array indices)
   slots: [],    // {cx, cy, slotIdx} for ALL grid cells, recorded once at drag-start
   ghost: null, originEl: null,
   ofsX: 0, ofsY: 0,
   timer: null,
+  flipTimer: null,  // timer for cross-page flip when hovering edge zone
   startX: 0, startY: 0,
 };
 
@@ -418,11 +420,18 @@ function beginDrag(x, y, pi, ii, iconEl) {
 
   drag.active    = true;
   drag.pi        = pi;
+  drag.fromPi    = pi;
   drag.fromSlot  = fromSlot;
   drag.toSlot    = fromSlot;
   drag.originEl  = iconEl;
   drag.ofsX      = x - rect.left;
   drag.ofsY      = y - rect.top;
+
+  // Show cross-page drag zones if there are other pages
+  if (state.data.pages.length > 1) {
+    if (pi > 0)                              document.getElementById('drag-zone-left').classList.add('visible');
+    if (pi < state.data.pages.length - 1)   document.getElementById('drag-zone-right').classList.add('visible');
+  }
 
   // Floating ghost that follows the finger
   const ghost = iconEl.cloneNode(true);
@@ -445,6 +454,28 @@ function moveDrag(x, y) {
   drag.ghost.style.left = (x - drag.ofsX) + 'px';
   drag.ghost.style.top  = (y - drag.ofsY) + 'px';
 
+  // Cross-page edge zone detection (72px from screen edges)
+  const ZONE_WIDTH = 72;
+  const inLeft  = x < ZONE_WIDTH && drag.pi > 0;
+  const inRight = x > window.innerWidth - ZONE_WIDTH && drag.pi < state.data.pages.length - 1;
+
+  const zoneLeft  = document.getElementById('drag-zone-left');
+  const zoneRight = document.getElementById('drag-zone-right');
+  zoneLeft.classList.toggle('active',  inLeft);
+  zoneRight.classList.toggle('active', inRight);
+
+  if (inLeft || inRight) {
+    if (!drag.flipTimer) {
+      drag.flipTimer = setTimeout(() => {
+        drag.flipTimer = null;
+        flipToPage(drag.pi + (inRight ? 1 : -1));
+      }, 600);
+    }
+    return;  // don't highlight slots while hovering zone
+  } else {
+    if (drag.flipTimer) { clearTimeout(drag.flipTimer); drag.flipTimer = null; }
+  }
+
   // Nearest slot by Euclidean distance to ALL pre-recorded cell centers
   let nearestSlot = drag.toSlot, minD = Infinity;
   drag.slots.forEach(s => {
@@ -463,10 +494,63 @@ function moveDrag(x, y) {
   if (targetEl && targetEl !== drag.originEl) targetEl.classList.add('grid-cell-target');
 }
 
+function flipToPage(targetPi) {
+  const total = state.data.pages.length;
+  if (targetPi < 0 || targetPi >= total) return;
+
+  // Clear old highlight
+  document.querySelectorAll('.grid-cell-target').forEach(el => el.classList.remove('grid-cell-target'));
+
+  // Hide origin icon on old page before flipping
+  if (drag.originEl) {
+    drag.originEl.style.opacity       = '0';
+    drag.originEl.style.pointerEvents = 'none';
+  }
+
+  drag.pi = targetPi;
+
+  // Render the target page (in case it's empty) so slots exist
+  renderPageGrid(targetPi);
+  goToPage(targetPi);
+
+  // Update zone visibility for new page
+  document.getElementById('drag-zone-left').classList.toggle('visible',  targetPi > 0);
+  document.getElementById('drag-zone-right').classList.toggle('visible', targetPi < total - 1);
+  document.getElementById('drag-zone-left').classList.remove('active');
+  document.getElementById('drag-zone-right').classList.remove('active');
+
+  // Re-record slots after the CSS slide transition (~300ms)
+  setTimeout(() => {
+    const pageEl = document.querySelector(`.page[data-page-index="${targetPi}"]`);
+    if (!pageEl) return;
+    const allCells = Array.from(pageEl.querySelectorAll('[data-slot]'));
+    drag.slots = allCells.map(el => {
+      const r = el.getBoundingClientRect();
+      return { cx: r.left + r.width / 2, cy: r.top + r.height / 2, slotIdx: parseInt(el.dataset.slot) };
+    });
+    // Pick first free slot as initial toSlot on new page
+    const occupiedSlots = new Set(state.data.pages[targetPi].items.map(it => it.slot));
+    const style = getComputedStyle(document.documentElement);
+    const cols = parseInt(style.getPropertyValue('--cols')) || 4;
+    const rows = parseInt(style.getPropertyValue('--rows')) || 5;
+    const total = cols * rows;
+    let freeSlot = 0;
+    for (let s = 0; s < total; s++) { if (!occupiedSlots.has(s)) { freeSlot = s; break; } }
+    drag.toSlot = freeSlot;
+  }, 320);
+}
+
 function endDrag(commit = true) {
   if (!drag.active) return;
-  const { pi, fromSlot, toSlot } = drag;
+  const { pi, fromPi, fromSlot, toSlot } = drag;
   drag.active = false;
+
+  // Cancel any pending flip
+  if (drag.flipTimer) { clearTimeout(drag.flipTimer); drag.flipTimer = null; }
+
+  // Hide drag zones
+  document.getElementById('drag-zone-left').classList.remove('visible', 'active');
+  document.getElementById('drag-zone-right').classList.remove('visible', 'active');
 
   drag.ghost?.remove();
   drag.ghost = null;
@@ -480,20 +564,51 @@ function endDrag(commit = true) {
   // Clear target highlight
   document.querySelectorAll('.grid-cell-target').forEach(el => el.classList.remove('grid-cell-target'));
 
-  if (commit && fromSlot !== toSlot) {
-    const items = state.data.pages[pi].items;
-    const movedItem = items.find(it => it.slot === fromSlot);
-    const swapItem  = items.find(it => it.slot === toSlot);
-    if (movedItem) movedItem.slot = toSlot;
-    if (swapItem)  swapItem.slot  = fromSlot;  // swap if occupied; empty slot = just move
-    saveData().catch(() => {});
+  if (commit) {
+    if (fromPi !== pi) {
+      // Cross-page move: take item from fromPi, place on current page (pi)
+      const srcItems = state.data.pages[fromPi].items;
+      const movedIndex = srcItems.findIndex(it => it.slot === fromSlot);
+      if (movedIndex !== -1) {
+        const [movedItem] = srcItems.splice(movedIndex, 1);
+        // Place at toSlot on destination page, swapping if occupied
+        const dstItems = state.data.pages[pi].items;
+        const swapItem = dstItems.find(it => it.slot === toSlot);
+        if (swapItem) {
+          // Move swap item back to source page at fromSlot
+          dstItems.splice(dstItems.indexOf(swapItem), 1);
+          swapItem.slot = fromSlot;
+          srcItems.push(swapItem);
+        }
+        movedItem.slot = toSlot;
+        dstItems.push(movedItem);
+        saveData().catch(() => {});
+      }
+      renderPageGrid(fromPi);
+      renderPageGrid(pi);
+    } else if (fromSlot !== toSlot) {
+      // Same-page move
+      const items = state.data.pages[pi].items;
+      const movedItem = items.find(it => it.slot === fromSlot);
+      const swapItem  = items.find(it => it.slot === toSlot);
+      if (movedItem) movedItem.slot = toSlot;
+      if (swapItem)  swapItem.slot  = fromSlot;
+      saveData().catch(() => {});
+      renderPageGrid(pi);
+    } else {
+      renderPageGrid(pi);
+    }
+  } else {
+    renderPageGrid(fromPi);
+    if (fromPi !== pi) renderPageGrid(pi);
   }
 
-  renderPageGrid(pi);
   if (editMode) {
     requestAnimationFrame(() => {
-      document.querySelectorAll(`.page[data-page-index="${pi}"] .app-icon[data-ii]`)
-        .forEach(el => el.classList.add('jiggle'));
+      [fromPi, pi].filter((v, i, a) => a.indexOf(v) === i).forEach(pageIdx => {
+        document.querySelectorAll(`.page[data-page-index="${pageIdx}"] .app-icon[data-ii]`)
+          .forEach(el => el.classList.add('jiggle'));
+      });
     });
   }
 }
@@ -572,6 +687,13 @@ function goToPage(index, animate = true) {
   document.querySelectorAll('.dot').forEach((d, i) => {
     d.classList.toggle('active', i === index);
   });
+
+  // Update page name label
+  const label = document.getElementById('page-name-label');
+  if (label) {
+    const name = state.data.pages[index]?.name || '';
+    label.textContent = name;
+  }
 }
 
 // ===== SWIPE =====
