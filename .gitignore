@@ -1,5 +1,5 @@
-# Sensitive — contains passwords, tokens, SSH keys
-01-dev/CLAUDE.md
+# Sensitive — entire 01-dev/ is local only (contains passwords, tokens, SSH keys)
+01-dev/
 
 # macOS
 .DS_Store
