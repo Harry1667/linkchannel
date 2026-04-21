@@ -100,7 +100,9 @@ html, body {
   cursor: pointer;
   -webkit-tap-highlight-color: transparent;
   touch-action: none;
-  -webkit-touch-callout: none; /* suppress iOS long-press context menu */
+  -webkit-touch-callout: none;
+  -webkit-user-select: none;
+  user-select: none;
 }
 
 .app-icon .icon-wrap {

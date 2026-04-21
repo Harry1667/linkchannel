@@ -13,16 +13,13 @@ const drag = {
   active: false,
   pi: -1,
   fromIdx: -1,
-  currentSlot: -1,
-  slotPositions: [],  // fixed slot centers recorded at drag start
+  toIdx: -1,
+  slots: [],      // {cx,cy} for every icon, recorded once at drag-start
   ghost: null,
   originEl: null,
-  ofsX: 0,
-  ofsY: 0,
-  longPressTimer: null,
-  startX: 0,
-  startY: 0,
-  moved: false,
+  ofsX: 0, ofsY: 0,
+  timer: null,    // long-press timer
+  startX: 0, startY: 0,
 };
 
 const COLORS = ['icon-color-1','icon-color-2','icon-color-3','icon-color-4','icon-color-5','icon-color-6','icon-color-7','icon-color-8'];
@@ -303,81 +300,61 @@ function createFolderIcon(item, pi, ii) {
   return el;
 }
 
-// ===== DRAG ATTACHMENT (touch + mouse) =====
-// Uses touch events on iOS/iPad (pointer events fire pointercancel after long press,
-// stopping pointermove delivery — this approach bypasses that limitation).
+// ===== DRAG EVENTS (long-press to enter edit, touch/mouse to reorder) =====
 function attachDragEvents(el, pi, ii) {
-  if (pi === null || ii === null) return; // folder modal items — no drag
+  if (pi === null || ii === null) return;
 
-  // ---- Touch (iOS / iPad) ----
+  // ── Touch ──────────────────────────────────────────────────────────────
   el.addEventListener('touchstart', e => {
     const t = e.touches[0];
     drag.startX = t.clientX;
     drag.startY = t.clientY;
-    drag.moved = false;
 
     if (editMode) {
-      // Already in edit mode — start drag immediately
       e.preventDefault();
       beginDrag(t.clientX, t.clientY, pi, ii, el);
       return;
     }
 
-    drag.longPressTimer = setTimeout(() => {
-      drag.longPressTimer = null;
-      if (drag.moved) return;
+    drag.timer = setTimeout(() => {
+      drag.timer = null;
       enterEditMode();
       beginDrag(drag.startX, drag.startY, pi, ii, el);
-    }, 500);
+    }, 600);
   }, { passive: false });
 
   el.addEventListener('touchmove', e => {
-    if (drag.longPressTimer) {
-      if (Math.hypot(e.touches[0].clientX - drag.startX, e.touches[0].clientY - drag.startY) > 8) {
-        clearTimeout(drag.longPressTimer);
-        drag.longPressTimer = null;
-        drag.moved = true;
-      }
+    if (!drag.timer) return;
+    if (Math.hypot(e.touches[0].clientX - drag.startX, e.touches[0].clientY - drag.startY) > 8) {
+      clearTimeout(drag.timer);
+      drag.timer = null;
     }
   }, { passive: true });
 
-  el.addEventListener('touchend', () => {
-    if (drag.longPressTimer) { clearTimeout(drag.longPressTimer); drag.longPressTimer = null; }
-  });
+  el.addEventListener('touchend',    () => { if (drag.timer) { clearTimeout(drag.timer); drag.timer = null; } });
+  el.addEventListener('touchcancel', () => { if (drag.timer) { clearTimeout(drag.timer); drag.timer = null; } });
 
-  el.addEventListener('touchcancel', () => {
-    if (drag.longPressTimer) { clearTimeout(drag.longPressTimer); drag.longPressTimer = null; }
-  });
-
-  // ---- Mouse (desktop) ----
+  // ── Mouse ──────────────────────────────────────────────────────────────
   el.addEventListener('mousedown', e => {
     if (e.button !== 0) return;
     drag.startX = e.clientX;
     drag.startY = e.clientY;
-    drag.moved = false;
 
-    if (editMode) {
-      beginDrag(e.clientX, e.clientY, pi, ii, el);
-      return;
-    }
+    if (editMode) { beginDrag(e.clientX, e.clientY, pi, ii, el); return; }
 
-    drag.longPressTimer = setTimeout(() => {
-      drag.longPressTimer = null;
-      if (drag.moved) return;
+    drag.timer = setTimeout(() => {
+      drag.timer = null;
       enterEditMode();
       beginDrag(drag.startX, drag.startY, pi, ii, el);
-    }, 500);
+    }, 600);
   });
 }
 
-// ===== DRAG TO REORDER =====
-// Strategy: record slot positions at drag-start, use CSS transforms to visually
-// shift icons (no DOM re-render during drag), commit to state only on drop.
-
+// ===== EDIT MODE =====
 function enterEditMode() {
   if (editMode) return;
   editMode = true;
-  isDragging = false; // cancel any in-progress touch swipe
+  isDragging = false;
   document.getElementById('edit-done-btn').style.display = 'block';
   document.querySelectorAll('.icon-grid .app-icon').forEach(el => el.classList.add('jiggle'));
   if (navigator.vibrate) navigator.vibrate(10);
@@ -391,168 +368,139 @@ function exitEditMode() {
   saveData().catch(() => {});
 }
 
-function beginDrag(clientX, clientY, pi, ii, iconEl) {
+// ===== DRAG CORE =====
+function beginDrag(x, y, pi, ii, iconEl) {
   const pageEl = document.querySelector(`.page[data-page-index="${pi}"]`);
   if (!pageEl) return;
 
   const icons = Array.from(pageEl.querySelectorAll('.app-icon[data-ii]'));
 
-  // Record each slot's center position — these stay FIXED throughout the drag
-  drag.slotPositions = icons.map(ic => {
+  // Record every slot's center — stays fixed for the entire drag
+  drag.slots = icons.map(ic => {
     const r = ic.getBoundingClientRect();
     return { cx: r.left + r.width / 2, cy: r.top + r.height / 2 };
   });
 
   const rect = iconEl.getBoundingClientRect();
-  drag.active = true;
-  drag.pi = pi;
-  drag.fromIdx = ii;
-  drag.currentSlot = ii;
+  drag.active   = true;
+  drag.pi       = pi;
+  drag.fromIdx  = ii;
+  drag.toIdx    = ii;
   drag.originEl = iconEl;
-  drag.ofsX = clientX - rect.left;
-  drag.ofsY = clientY - rect.top;
+  drag.ofsX     = x - rect.left;
+  drag.ofsY     = y - rect.top;
 
-  // Floating ghost clone
-  // Remove jiggle from ALL icons — CSS animation overrides inline transform,
-  // which would prevent applyDragVisual's translate() from taking effect.
-  pageEl.querySelectorAll('.app-icon[data-ii]').forEach(el => el.classList.remove('jiggle'));
+  // Jiggle uses CSS transform:rotate — must be removed before we apply translate
+  icons.forEach(ic => ic.classList.remove('jiggle'));
 
+  // Floating ghost that follows the finger
   const ghost = iconEl.cloneNode(true);
   ghost.classList.remove('jiggle', 'falling');
-  ghost.style.cssText = `position:fixed;left:${rect.left}px;top:${rect.top}px;width:${rect.width}px;pointer-events:none;z-index:9999;transform:scale(1.12);opacity:0.92;transition:transform 0.12s;`;
+  ghost.style.cssText = `position:fixed;left:${rect.left}px;top:${rect.top}px;` +
+    `width:${rect.width}px;height:${rect.height}px;pointer-events:none;z-index:9999;` +
+    `opacity:0.92;transform:scale(1.12);transition:transform 0.12s;`;
   document.body.appendChild(ghost);
   drag.ghost = ghost;
 
-  iconEl.style.opacity = '0';
+  // Hide origin — keeps its slot in the grid as an invisible placeholder
+  iconEl.style.opacity       = '0';
   iconEl.style.pointerEvents = 'none';
 }
 
-// Build a mapping: newOrder[slot] = original item index at that slot.
-// The dragged item (fromIdx) goes to targetSlot; other items maintain relative order.
-function computeNewOrder(n, fromIdx, targetSlot) {
-  const newOrder = new Array(n);
-  newOrder[targetSlot] = fromIdx;
-  const remaining = [];
-  for (let i = 0; i < n; i++) {
-    if (i !== fromIdx) remaining.push(i);
-  }
-  let ri = 0;
-  for (let slot = 0; slot < n; slot++) {
-    if (slot !== targetSlot) newOrder[slot] = remaining[ri++];
-  }
-  return newOrder;
-}
+function moveDrag(x, y) {
+  if (!drag.active) return;
 
-// Shift non-dragged icons to their new visual positions using CSS translate.
-function applyDragVisual() {
-  const pageEl = document.querySelector(`.page[data-page-index="${drag.pi}"]`);
-  if (!pageEl) return;
-  const icons = Array.from(pageEl.querySelectorAll('.app-icon[data-ii]'));
-  const n = icons.length;
-  const newOrder = computeNewOrder(n, drag.fromIdx, drag.currentSlot);
-
-  icons.forEach((ic, originalSlot) => {
-    if (originalSlot === drag.fromIdx) return; // hidden ghost slot
-    const targetSlot = newOrder.indexOf(originalSlot);
-    const dx = drag.slotPositions[targetSlot].cx - drag.slotPositions[originalSlot].cx;
-    const dy = drag.slotPositions[targetSlot].cy - drag.slotPositions[originalSlot].cy;
-    ic.style.transition = 'transform 0.18s ease';
-    ic.style.transform = (dx === 0 && dy === 0) ? '' : `translate(${dx}px,${dy}px)`;
-  });
-}
-
-function onDragMove(x, y) {
-  if (!drag.active || !drag.ghost) return;
-
-  // Move ghost with finger/cursor
+  // Ghost follows finger
   drag.ghost.style.left = (x - drag.ofsX) + 'px';
   drag.ghost.style.top  = (y - drag.ofsY) + 'px';
 
-  // Find nearest FIXED slot position — no oscillation because positions never change
-  let minDist = Infinity;
-  let nearestSlot = drag.currentSlot;
-  drag.slotPositions.forEach((pos, slot) => {
-    const dist = Math.hypot(x - pos.cx, y - pos.cy);
-    if (dist < minDist) { minDist = dist; nearestSlot = slot; }
+  // Nearest slot by Euclidean distance to the pre-recorded centers
+  let nearest = drag.toIdx, minD = Infinity;
+  drag.slots.forEach((s, i) => {
+    const d = Math.hypot(x - s.cx, y - s.cy);
+    if (d < minD) { minD = d; nearest = i; }
   });
 
-  if (nearestSlot !== drag.currentSlot) {
-    drag.currentSlot = nearestSlot;
-    applyDragVisual();
-  }
+  if (nearest === drag.toIdx) return;
+  drag.toIdx = nearest;
+
+  // Slide other icons with CSS translate so they appear to make room
+  const pageEl = document.querySelector(`.page[data-page-index="${drag.pi}"]`);
+  if (!pageEl) return;
+  const icons = Array.from(pageEl.querySelectorAll('.app-icon[data-ii]'));
+  const from = drag.fromIdx, to = drag.toIdx;
+
+  icons.forEach((ic, i) => {
+    if (i === from) return; // dragged icon is hidden — no transform needed
+    let dest = i;
+    if (from < to && i > from && i <= to) dest = i - 1; // shift left
+    if (from > to && i >= to && i < from) dest = i + 1; // shift right
+    const dx = drag.slots[dest].cx - drag.slots[i].cx;
+    const dy = drag.slots[dest].cy - drag.slots[i].cy;
+    ic.style.transition = 'transform 0.18s ease';
+    ic.style.transform  = (dx === 0 && dy === 0) ? '' : `translate(${dx}px,${dy}px)`;
+  });
 }
 
-function endDrag(save = true) {
+function endDrag(commit = true) {
   if (!drag.active) return;
-
-  const savedPi          = drag.pi;
-  const savedFromIdx     = drag.fromIdx;
-  const savedCurrentSlot = drag.currentSlot;
+  const { pi, fromIdx, toIdx } = drag;
   drag.active = false;
 
-  // Remove ghost
-  if (drag.ghost) { drag.ghost.remove(); drag.ghost = null; }
+  drag.ghost?.remove();
+  drag.ghost = null;
 
-  // Restore hidden origin slot (transforms will be cleared by re-render)
   if (drag.originEl) {
-    drag.originEl.style.opacity = '';
+    drag.originEl.style.opacity       = '';
     drag.originEl.style.pointerEvents = '';
     drag.originEl = null;
   }
 
-  // Commit new order to state
-  if (save && savedFromIdx !== savedCurrentSlot) {
-    const items = state.data.pages[savedPi].items;
-    const newOrder = computeNewOrder(items.length, savedFromIdx, savedCurrentSlot);
-    state.data.pages[savedPi].items = newOrder.map(idx => items[idx]);
+  if (commit && fromIdx !== toIdx) {
+    const items = state.data.pages[pi].items;
+    const [moved] = items.splice(fromIdx, 1);
+    items.splice(toIdx, 0, moved);
     saveData().catch(() => {});
   }
 
-  // Re-render clears all inline styles/transforms cleanly
-  renderPageGrid(savedPi);
+  renderPageGrid(pi);
   if (editMode) {
-    setTimeout(() => {
-      document.querySelectorAll(`.page[data-page-index="${savedPi}"] .app-icon[data-ii]`)
+    requestAnimationFrame(() => {
+      document.querySelectorAll(`.page[data-page-index="${pi}"] .app-icon[data-ii]`)
         .forEach(el => el.classList.add('jiggle'));
-    }, 30);
+    });
   }
 }
 
 function initDragEvents() {
-  // ---- Touch global handlers ----
+  // Touch — non-passive so we can block scroll while dragging
   document.addEventListener('touchmove', e => {
     if (!drag.active) return;
-    e.preventDefault(); // prevent page scroll while dragging
-    const t = e.touches[0];
-    onDragMove(t.clientX, t.clientY);
+    e.preventDefault();
+    moveDrag(e.touches[0].clientX, e.touches[0].clientY);
   }, { passive: false });
 
-  document.addEventListener('touchend', e => {
-    if (drag.longPressTimer) { clearTimeout(drag.longPressTimer); drag.longPressTimer = null; }
+  document.addEventListener('touchend', () => {
+    if (drag.timer) { clearTimeout(drag.timer); drag.timer = null; }
     if (drag.active) endDrag(true);
   });
 
   document.addEventListener('touchcancel', () => {
-    if (drag.longPressTimer) { clearTimeout(drag.longPressTimer); drag.longPressTimer = null; }
+    if (drag.timer) { clearTimeout(drag.timer); drag.timer = null; }
     if (drag.active) endDrag(false);
   });
 
-  // ---- Mouse global handlers ----
+  // Mouse
   document.addEventListener('mousemove', e => {
-    // Cancel long-press if mouse moved significantly before timer fires
-    if (drag.longPressTimer) {
-      if (Math.hypot(e.clientX - drag.startX, e.clientY - drag.startY) > 8) {
-        clearTimeout(drag.longPressTimer);
-        drag.longPressTimer = null;
-        drag.moved = true;
-      }
+    if (drag.timer && Math.hypot(e.clientX - drag.startX, e.clientY - drag.startY) > 8) {
+      clearTimeout(drag.timer); drag.timer = null;
       return;
     }
-    if (drag.active) onDragMove(e.clientX, e.clientY);
+    if (drag.active) moveDrag(e.clientX, e.clientY);
   });
 
   document.addEventListener('mouseup', () => {
-    if (drag.longPressTimer) { clearTimeout(drag.longPressTimer); drag.longPressTimer = null; }
+    if (drag.timer) { clearTimeout(drag.timer); drag.timer = null; }
     if (drag.active) endDrag(true);
   });
 
